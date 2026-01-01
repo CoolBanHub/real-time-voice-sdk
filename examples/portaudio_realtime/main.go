@@ -7,8 +7,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/CoolBanHub/real-time-voice-sdk/doubao"
 	"github.com/go-kratos/kratos/v2/log"
-	"github.com/real-time-voice-sdk/doubao"
 )
 
 // PortAudio 实时语音对话示例

@@ -31,7 +31,7 @@
 ## 📦 安装
 
 ```bash
-go get github.com/real-time-voice-sdk
+go get github.com/CoolBanHub/real-time-voice-sdk
 ```
 
 ### 前置要求
@@ -57,7 +57,7 @@ import (
     "syscall"
 
     "github.com/go-kratos/kratos/v2/log"
-    "github.com/real-time-voice-sdk/doubao"
+    "github.com/CoolBanHub/real-time-voice-sdk/doubao"
 )
 
 func main() {

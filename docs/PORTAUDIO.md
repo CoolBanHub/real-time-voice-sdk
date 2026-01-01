@@ -67,7 +67,7 @@ go get github.com/gorilla/portaudio
 package main
 
 import (
-    "github.com/real-time-voice-sdk/doubao"
+    "github.com/CoolBanHub/real-time-voice-sdk/doubao"
 )
 
 func main() {
