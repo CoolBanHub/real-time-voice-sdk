@@ -1,10 +1,8 @@
 package doubao
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -41,10 +39,6 @@ func (this *RealtimeVoiceClient) initEventHandlers() map[int32]EventHandler {
 }
 
 func (this *RealtimeVoiceClient) handleMessage() {
-	// 启动音频捕获和播放（如果启用了 PortAudio）
-	this.startAudioCapture()
-	this.startAudioPlayback()
-
 	// 初始化事件处理器映射表
 	eventHandlers := this.initEventHandlers()
 
@@ -66,9 +60,6 @@ func (this *RealtimeVoiceClient) handleMessage() {
 			}
 			if this.OnAudio != nil {
 				go this.OnAudio(msg.Payload) // 异步执行
-			}
-			if this.isUsePortAudio {
-				this.handleIncomingAudio(msg.Payload)
 			}
 			continue
 		}
@@ -211,10 +202,6 @@ func (this *RealtimeVoiceClient) handleTTSSentenceStart(msg *Message) error {
 	if this.enableEventLog {
 		this.log.Info("TTS Sentence Start")
 	}
-	this.bufferLock.Lock()
-	this.buffer = this.buffer[:0]
-	this.s16Buffer = this.s16Buffer[:0]
-	this.bufferLock.Unlock()
 
 	var payload TTSSentenceStartResponse
 	if err := json.Unmarshal(msg.Payload, &payload); err == nil {
@@ -426,59 +413,4 @@ func (this *RealtimeVoiceClient) receiveMessage() (*Message, error) {
 		return nil, fmt.Errorf("unmarshal response message: %w", err)
 	}
 	return msg, nil
-}
-
-const (
-	sampleRate      = 24000
-	channels        = 1
-	framesPerBuffer = 512
-	bufferSeconds   = 100 // 最多缓冲100秒数据
-	DefaultPCM      = "pcm"
-	PcmS16LE        = "pcm_s16le"
-)
-
-func (this *RealtimeVoiceClient) handleIncomingAudio(data []byte) {
-	switch this.pcmFormat {
-	case PcmS16LE:
-		if this.enableEventLog {
-			this.log.Infof("Received audio byte len: %d, float16 len: %d", len(data), len(data)/2)
-		}
-		sampleCount := len(data) / 2
-		samples := make([]int16, sampleCount)
-		for i := 0; i < sampleCount; i++ {
-			bits := binary.LittleEndian.Uint16(data[i*2 : (i+1)*2])
-			samples[i] = int16(bits)
-		}
-		// 将音频加载到缓冲区
-		this.bufferLock.Lock()
-		defer this.bufferLock.Unlock()
-		this.s16Buffer = append(this.s16Buffer, samples...)
-		if len(this.s16Buffer) > sampleRate*bufferSeconds {
-			this.s16Buffer = this.s16Buffer[len(this.s16Buffer)-(sampleRate*bufferSeconds):]
-		}
-		if this.enableEventLog {
-			this.log.Infof("Audio buffer size: %d samples", len(this.s16Buffer))
-		}
-	case DefaultPCM:
-		if this.enableEventLog {
-			this.log.Infof("Received audio byte len: %d, float32 len: %d", len(data), len(data)/4)
-		}
-		sampleCount := len(data) / 4
-		samples := make([]float32, sampleCount)
-		for i := 0; i < sampleCount; i++ {
-			bits := binary.LittleEndian.Uint32(data[i*4 : (i+1)*4])
-			samples[i] = math.Float32frombits(bits)
-		}
-		// 将音频加载到缓冲区
-		this.bufferLock.Lock()
-		defer this.bufferLock.Unlock()
-		this.buffer = append(this.buffer, samples...)
-		if len(this.buffer) > sampleRate*bufferSeconds {
-			this.buffer = this.buffer[len(this.buffer)-(sampleRate*bufferSeconds):]
-		}
-		if this.enableEventLog {
-			this.log.Infof("Audio buffer size: %d samples", len(this.buffer))
-		}
-	}
-
 }

@@ -1,36 +1,24 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/CoolBanHub/real-time-voice-sdk/doubao"
 	"github.com/go-kratos/kratos/v2/log"
+	"github.com/gordonklaus/portaudio"
 )
 
-// PortAudio 实时语音对话示例
-//
-// 此示例展示如何使用 PortAudio 进行实时语音对话：
-// 1. 从麦克风实时捕获音频并发送到服务器
-// 2. 接收服务器的语音响应并通过扬声器播放
-//
-// 编译方法：
-//   go build -tags portaudio
-//
-// 运行前准备：
-//   macOS:   brew install portaudio
-//   Ubuntu:  sudo apt-get install portaudio19-dev
-//   Windows: pacman -S mingw-w64-x86_64-portaudio (MSYS2)
-//
-// 运行方法：
-//   export DOUBAO_APP_ID=your-app-id
-//   export DOUBAO_ACCESS_TOKEN=your-token
-//   ./portaudio_realtime
-
+// 使用 PortAudio 前需要安装系统依赖：
 func main() {
+
 	// 从环境变量读取配置
 	appID := os.Getenv("DOUBAO_APP_ID")
 	accessToken := os.Getenv("DOUBAO_ACCESS_TOKEN")
@@ -46,7 +34,7 @@ func main() {
 	// 创建日志
 	logger := log.NewStdLogger(os.Stdout)
 	logger = log.With(logger, "caller", log.Caller(4), "ts", log.DefaultTimestamp)
-
+	helper := log.NewHelper(log.With(logger, "module", "portaudio_realtime"))
 	fmt.Println("==============================================")
 	fmt.Println("  豆包实时语音对话示例 (PortAudio)")
 	fmt.Println("==============================================")
@@ -57,10 +45,8 @@ func main() {
 		Appid:       appID,
 		AccessToken: accessToken,
 		Speaker:     "zh_female_vv_jupiter_bigtts", // 音色配置
-		Log:         log.NewHelper(log.With(logger, "module", "doubao")),
+		Log:         helper,
 		// 启用 PortAudio 实时音频捕获和播放
-		// 注意：需要使用 -tags portaudio 编译
-		IsUsePortAudio: true,
 		// 可选：自定义重连配置
 		Reconnect: &doubao.ReconnectConfig{
 			Enabled:           true,
@@ -74,8 +60,26 @@ func main() {
 	// 创建客户端
 	client := doubao.NewRealtimeVoiceClient(cfg)
 
+	p := &Portaudio{
+		ctx:        context.Background(),
+		log:        helper,
+		client:     client,
+		pcmFormat:  "pcm_s16le", //默认这个 需要跟上面客户端配置的一样
+		buffer:     make([]float32, 0, sampleRate*bufferSeconds),
+		s16Buffer:  make([]int16, 0, sampleRate*bufferSeconds),
+		bufferLock: sync.Mutex{},
+	}
+	terminate := p.Init()
+	defer func() {
+		if err := terminate(); err != nil {
+			fmt.Printf("❌ terminate 报错: %v\n", err)
+			os.Exit(1)
+		}
+
+	}()
+
 	// 设置事件回调
-	setupCallbacks(client)
+	setupCallbacks(client, p)
 
 	// 启动 WebSocket 连接
 	fmt.Println("正在连接豆包服务器...")
@@ -93,7 +97,9 @@ func main() {
 	}
 	fmt.Println("✅ 实时对话会话已启动！")
 	fmt.Println()
-
+	//开始麦克风监听
+	go p.sendAudioByPortAudio()
+	go p.startPlayer()
 	// 说明信息
 	printUsageInfo()
 
@@ -105,12 +111,13 @@ func main() {
 	fmt.Println("\n正在关闭连接...")
 }
 
-func setupCallbacks(client *doubao.RealtimeVoiceClient) {
+func setupCallbacks(client *doubao.RealtimeVoiceClient, portaudio *Portaudio) {
 	// 接收服务器音频数据（PortAudio 会自动播放）
 	client.OnAudio = func(audioData []byte) {
 		// PortAudio 启用时，音频会自动通过扬声器播放
 		// 这里可以记录音频接收情况
 		// fmt.Printf("  [音频] 接收 %d bytes\n", len(audioData))
+		portaudio.handleIncomingAudio(audioData)
 	}
 
 	// ASR 最终识别结果（用户说的话）
@@ -134,6 +141,7 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient) {
 	// TTS 开始（AI 开始说话）
 	client.OnTTSStart = func(metadata *doubao.MsgMetadata) {
 		fmt.Printf("\n🔊 [AI 说话] 开始播放...\n")
+		portaudio.clearBuffer()
 	}
 
 	// TTS 输出文本（AI 说的话）
@@ -155,6 +163,7 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient) {
 	// 用户打断
 	client.OnInterrupt = func() {
 		fmt.Println("\n  ⚠️  [打断] 检测到用户打断")
+		portaudio.clearBuffer()
 	}
 
 	// 错误处理
@@ -176,6 +185,219 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient) {
 	client.OnReconnectFailed = func(attempts int, err error) {
 		fmt.Printf("  ❌ [重连失败] %d 次尝试后失败: %v\n", attempts, err)
 	}
+}
+
+const (
+	sampleRate      = 24000
+	channels        = 1
+	framesPerBuffer = 512
+	bufferSeconds   = 100 // 最多缓冲100秒数据
+	DefaultPCM      = "pcm"
+	PcmS16LE        = "pcm_s16le"
+)
+
+type Portaudio struct {
+	ctx       context.Context
+	log       *log.Helper
+	client    *doubao.RealtimeVoiceClient
+	pcmFormat string
+	buffer    []float32
+	s16Buffer []int16
+	//使用播报语音的
+	bufferLock sync.Mutex
+}
+
+func (this *Portaudio) Init() func() error {
+	if err := portaudio.Initialize(); err != nil {
+		this.log.Errorf("portaudio initialize error: %v", err)
+		return func() error {
+			return err
+		}
+	}
+	return portaudio.Terminate
+
+}
+func (this *Portaudio) sendAudioByPortAudio() {
+	defer func() {
+		if err := recover(); err != nil {
+			this.log.Errorf("panic: %v", err)
+		}
+	}()
+
+	defaultInputDevice, err := portaudio.DefaultInputDevice()
+	if err != nil {
+		this.log.Errorf("Failed to get default input device: %v", err)
+		return
+	}
+	this.log.Infof("Using default input device: %s", defaultInputDevice.Name)
+
+	streamParameters := portaudio.StreamParameters{ //todo 配置参数
+		Input: portaudio.StreamDeviceParameters{
+			Device:   defaultInputDevice,
+			Channels: 1,
+			Latency:  defaultInputDevice.DefaultLowInputLatency,
+		},
+		SampleRate:      16000,
+		FramesPerBuffer: 160,
+	}
+
+	// sayhello后模拟chatTextQuery
+	stream, err := portaudio.OpenStream(streamParameters, func(in []int16) {
+		// 1. 将 int16 音频数据转换为 []byte (PCM S16LE)
+		audioBytes := make([]byte, len(in)*2)
+		for i, sample := range in {
+			audioBytes[i*2] = byte(sample & 0xff)
+			audioBytes[i*2+1] = byte((sample >> 8) & 0xff)
+		}
+		if this.client != nil {
+			err := this.client.SendAudio(audioBytes)
+			if err != nil {
+				this.log.Error(err)
+				return
+			}
+		}
+	})
+
+	if err != nil {
+		this.log.Errorf("Failed to open microphone input stream: %v", err)
+		return
+	}
+	defer stream.Close()
+
+	if err := stream.Start(); err != nil {
+		this.log.Errorf("Failed to start microphone input stream: %v", err)
+		return
+	}
+	this.log.Info("Microphone input stream started. please speak...")
+
+	// 保持 goroutine 运行以允许回调处理音频
+	select {
+	case <-this.ctx.Done():
+		this.log.Info("Stopping microphone input stream due to context cancellation...")
+		if err := stream.Stop(); err != nil {
+			this.log.Errorf("Failed to stop microphone input stream: %v", err)
+		}
+		if this.client != nil {
+			err = this.client.Close()
+			if err != nil {
+				this.log.Errorf("Failed to finish session: %v", err)
+			}
+		}
+	}
+	this.log.Info("Microphone input stream stopped.")
+	return
+}
+
+func (this *Portaudio) startPlayer() {
+	outputDevice, err := portaudio.DefaultOutputDevice()
+	if err != nil {
+		this.log.Errorf("Failed to get default output device: %v", err)
+		return
+	}
+
+	outputParameters := portaudio.StreamParameters{
+		Output: portaudio.StreamDeviceParameters{
+			Device:   outputDevice,
+			Channels: channels,
+			Latency:  10 * time.Millisecond,
+		},
+		SampleRate:      float64(sampleRate),
+		FramesPerBuffer: framesPerBuffer,
+	}
+
+	var outputStream *portaudio.Stream
+	switch this.pcmFormat {
+	case DefaultPCM:
+		outputStream, err = portaudio.OpenStream(outputParameters, func(out []float32) {
+			this.bufferLock.Lock()
+			defer this.bufferLock.Unlock()
+			if len(this.buffer) < len(out) {
+				copy(out, this.buffer)
+				for i := len(this.buffer); i < len(out); i++ {
+					out[i] = 0
+				}
+				this.buffer = this.buffer[:0]
+			} else {
+				copy(out, this.buffer)
+				this.buffer = this.buffer[len(out):]
+			}
+		})
+	case PcmS16LE:
+		outputStream, err = portaudio.OpenStream(outputParameters, func(out []int16) {
+			this.bufferLock.Lock()
+			defer this.bufferLock.Unlock()
+			if len(this.s16Buffer) < len(out) {
+				copy(out, this.s16Buffer)
+				for i := len(this.s16Buffer); i < len(out); i++ {
+					out[i] = 0
+				}
+				this.s16Buffer = this.s16Buffer[:0]
+			} else {
+				copy(out, this.s16Buffer)
+				this.s16Buffer = this.s16Buffer[len(out):]
+			}
+		})
+	}
+
+	if outputStream == nil {
+		this.log.Errorf("Failed to open PortAudio output stream: %v", err)
+		return
+	}
+	if err != nil {
+		this.log.Errorf("Failed to open PortAudio output stream: %v", err)
+		return
+	}
+	defer outputStream.Close()
+
+	if err := outputStream.Start(); err != nil {
+		this.log.Errorf("Failed to start PortAudio output stream: %v", err)
+		return
+	}
+	this.log.Info("PortAudio output stream started for playback.")
+
+	// 保持流运行，防止函数返回导致流停止
+	<-this.ctx.Done()
+}
+
+func (this *Portaudio) handleIncomingAudio(data []byte) {
+	switch this.pcmFormat {
+	case PcmS16LE:
+		sampleCount := len(data) / 2
+		samples := make([]int16, sampleCount)
+		for i := 0; i < sampleCount; i++ {
+			bits := binary.LittleEndian.Uint16(data[i*2 : (i+1)*2])
+			samples[i] = int16(bits)
+		}
+		// 将音频加载到缓冲区
+		this.bufferLock.Lock()
+		defer this.bufferLock.Unlock()
+		this.s16Buffer = append(this.s16Buffer, samples...)
+		if len(this.s16Buffer) > sampleRate*bufferSeconds {
+			this.s16Buffer = this.s16Buffer[len(this.s16Buffer)-(sampleRate*bufferSeconds):]
+		}
+	case DefaultPCM:
+		sampleCount := len(data) / 4
+		samples := make([]float32, sampleCount)
+		for i := 0; i < sampleCount; i++ {
+			bits := binary.LittleEndian.Uint32(data[i*4 : (i+1)*4])
+			samples[i] = math.Float32frombits(bits)
+		}
+		// 将音频加载到缓冲区
+		this.bufferLock.Lock()
+		defer this.bufferLock.Unlock()
+		this.buffer = append(this.buffer, samples...)
+		if len(this.buffer) > sampleRate*bufferSeconds {
+			this.buffer = this.buffer[len(this.buffer)-(sampleRate*bufferSeconds):]
+		}
+	}
+
+}
+
+func (this *Portaudio) clearBuffer() {
+	this.bufferLock.Lock()
+	this.buffer = this.buffer[:0]
+	this.s16Buffer = this.s16Buffer[:0]
+	this.bufferLock.Unlock()
 }
 
 func printUsageInfo() {

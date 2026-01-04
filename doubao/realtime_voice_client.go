@@ -28,7 +28,6 @@ type RealtimeVoiceClientConfig struct {
 
 	// 快捷配置：常用的简化配置选项
 	Speaker        string // 快捷配置：默认音色，会用于 TTS 配置（如果未提供 TTS 配置）
-	IsUsePortAudio bool   // 是否启用 PortAudio（需编译时加 -tags portaudio）
 	EnableEventLog bool   // 是否启用事件处理详细日志（默认 false，设置为 true 可查看详细事件日志）
 
 	// 完整配置：如果需要更详细的控制，使用以下配置（优先级高于快捷配置）
@@ -121,11 +120,6 @@ type RealtimeVoiceClient struct {
 	// 用户可以通过设置此字段来完全控制消息处理流程
 	MessageHandler func()
 
-	//使用播报语音的
-	bufferLock     sync.Mutex
-	buffer         []float32
-	s16Buffer      []int16
-	isUsePortAudio bool
 	enableEventLog bool // 是否启用事件处理详细日志
 	log            *log.Helper
 
@@ -154,19 +148,16 @@ func NewRealtimeVoiceClient(cfg *RealtimeVoiceClientConfig) *RealtimeVoiceClient
 		reconnectConfig = DefaultReconnectConfig()
 	}
 	this := &RealtimeVoiceClient{
-		Appid:           cfg.Appid,
-		AccessToken:     cfg.AccessToken,
-		wsURL:           wsURL,
-		queryChan:       make(chan struct{}, 1),
-		protocol:        NewBinaryProtocol(),
-		SessionId:       cfg.SessionId,
-		isUserQuerying:  atomic.Bool{},
-		localSequence:   atomic.Int64{},
-		wsWriteLock:     sync.Mutex{},
-		bufferLock:      sync.Mutex{},
-		buffer:          make([]float32, 0, sampleRate*bufferSeconds),
-		s16Buffer:       make([]int16, 0, sampleRate*bufferSeconds),
-		isUsePortAudio:  cfg.IsUsePortAudio,
+		Appid:          cfg.Appid,
+		AccessToken:    cfg.AccessToken,
+		wsURL:          wsURL,
+		queryChan:      make(chan struct{}, 1),
+		protocol:       NewBinaryProtocol(),
+		SessionId:      cfg.SessionId,
+		isUserQuerying: atomic.Bool{},
+		localSequence:  atomic.Int64{},
+		wsWriteLock:    sync.Mutex{},
+
 		enableEventLog:  cfg.EnableEventLog,
 		ctx:             context.Background(),
 		log:             cfg.Log,
@@ -615,12 +606,6 @@ func (this *RealtimeVoiceClient) Interrupt() error {
 	if this.OnInterrupt != nil {
 		this.OnInterrupt()
 	}
-	// Note: Doubao protocol usually handles interrupt via new audio input or specific events.
-	// We can also clear local buffers here.
-	this.bufferLock.Lock()
-	this.buffer = this.buffer[:0]
-	this.s16Buffer = this.s16Buffer[:0]
-	this.bufferLock.Unlock()
 	return nil
 }
 
