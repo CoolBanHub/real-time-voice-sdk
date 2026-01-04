@@ -54,14 +54,15 @@ type RealtimeVoiceClient struct {
 	wsWriteLock sync.Mutex
 	SessionId   string
 
-	localSequence  atomic.Int64
-	isUserQuerying atomic.Bool
-	queryChan      chan struct{}
-	protocol       *BinaryProtocol
-	doubaoWSConn   *websocket.Conn //跟豆包的实时链接
-	ClientWsConn   *websocket.Conn //客户端链接
-	ctx            context.Context
-	dialogID       string
+	localSequence        atomic.Int64
+	isUserQuerying       atomic.Bool
+	isSendingChatTTSText atomic.Bool
+	queryChan            chan struct{}
+	protocol             *BinaryProtocol
+	doubaoWSConn         *websocket.Conn //跟豆包的实时链接
+	ClientWsConn         *websocket.Conn //客户端链接
+	ctx                  context.Context
+	dialogID             string
 
 	// 用户自定义配置
 	asrConfig    *ASRPayload
@@ -414,7 +415,7 @@ func (this *RealtimeVoiceClient) startSession(req *StartSessionPayload) error {
 	return nil
 }
 
-func (this *RealtimeVoiceClient) sayHello(req *SayHelloPayload) error {
+func (this *RealtimeVoiceClient) SayHello(req *SayHelloPayload) error {
 	if this.doubaoWSConn == nil {
 		return ErrNotConnected
 	}
@@ -506,6 +507,7 @@ func (this *RealtimeVoiceClient) ChatTTSText(req *ChatTTSTextPayload) error {
 // SpeakText mimics the TS speakText method: sends text in two packets (start and end).
 func (this *RealtimeVoiceClient) SpeakText(text string) error {
 	if !this.isUserQuerying.Load() {
+		this.isSendingChatTTSText.Store(true)
 		// First packet: start=true, content=text, end=false
 		err := this.ChatTTSText(&ChatTTSTextPayload{
 			Start:   true,
@@ -516,7 +518,7 @@ func (this *RealtimeVoiceClient) SpeakText(text string) error {
 			return fmt.Errorf("send first packet failed: %w", err)
 		}
 		this.log.Infof("Sent ChatTTSText first packet: %s", text)
-
+		time.Sleep(time.Millisecond * 20)
 		// Last packet: start=false, content="", end=true
 		err = this.ChatTTSText(&ChatTTSTextPayload{
 			Start:   false,
@@ -562,6 +564,9 @@ func (this *RealtimeVoiceClient) ChatRAGText(req *ChatRAGTextPayload) error {
 }
 
 func (this *RealtimeVoiceClient) SendAudio(content []byte) error {
+	//if this.isSendingChatTTSText.Load() {
+	//	return nil
+	//}
 	if this.doubaoWSConn == nil {
 		return ErrNotConnected
 	}
@@ -795,4 +800,8 @@ type ChatTTSTextPayload struct {
 }
 type ChatRAGTextPayload struct {
 	ExternalRAG string `json:"external_rag"`
+}
+type RAGObject struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
 }

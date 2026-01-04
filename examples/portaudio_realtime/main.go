@@ -16,6 +16,11 @@ import (
 	"github.com/gordonklaus/portaudio"
 )
 
+type RAGObject struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
 // 使用 PortAudio 前需要安装系统依赖：
 func main() {
 
@@ -42,10 +47,11 @@ func main() {
 
 	// 配置客户端
 	cfg := &doubao.RealtimeVoiceClientConfig{
-		Appid:       appID,
-		AccessToken: accessToken,
-		Speaker:     "zh_female_vv_jupiter_bigtts", // 音色配置
-		Log:         helper,
+		Appid:          appID,
+		AccessToken:    accessToken,
+		Speaker:        "zh_female_vv_jupiter_bigtts", // 音色配置
+		Log:            helper,
+		EnableEventLog: true,
 		// 启用 PortAudio 实时音频捕获和播放
 		// 可选：自定义重连配置
 		Reconnect: &doubao.ReconnectConfig{
@@ -102,7 +108,40 @@ func main() {
 	go p.startPlayer()
 	// 说明信息
 	printUsageInfo()
+	time.Sleep(time.Second)
+	// 要合成的文本列表
+	go func() { //收到用户说话结束后才会开始触发！
+		textsToSpeak := []string{
+			"你好，我是小金，一个中文语音助手。",
+			"今天天气真不错，适合出去走走。",
+			"人工智能正在改变我们的生活。",
+			"祝你有美好的一天！",
+		}
 
+		// 依次合成每段文本
+		for i, text := range textsToSpeak {
+			fmt.Printf("\n[文本 %d] %s\n", i+1, text)
+			//client.SayHello(&doubao.SayHelloPayload{Content: text})
+			client.SpeakText(text)
+			// 等待 TTS 完成
+			// 在实际应用中，应该使用事件回调来判断何时完成
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
+	//// 依次合成每段文本
+	//for i, text := range textsToSpeak {
+	//	fmt.Printf("\n[文本 %d] %s\n", i+1, text)
+	//
+	//	if err := client.ChatTextQuery(&doubao.ChatTextQueryPayload{Content: text}); err != nil {
+	//		fmt.Printf("  [错误] 发送失败: %v\n", err)
+	//		continue
+	//	}
+	//
+	//	// 等待 TTS 完成
+	//	// 在实际应用中，应该使用事件回调来判断何时完成
+	//	time.Sleep(5 * time.Second)
+	//}
 	// 等待用户中断
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/samber/lo"
 )
 
 // EventHandler 定义事件处理函数类型
@@ -52,13 +53,15 @@ func (this *RealtimeVoiceClient) handleMessage() {
 			}
 			return
 		}
-
+		if this.enableEventLog {
+			this.log.Infof("Receive message: %+v", msg)
+		}
 		// Handle Audio (ServerACK)
 		if msg.Type == MsgTypeAudioOnlyServer && len(msg.Payload) > 0 {
 			if this.enableEventLog {
 				this.log.Infof("Receive audio message (len=%d)", len(msg.Payload))
 			}
-			if this.OnAudio != nil {
+			if this.OnAudio != nil && !this.isSendingChatTTSText.Load() {
 				go this.OnAudio(msg.Payload) // 异步执行
 			}
 			continue
@@ -161,6 +164,7 @@ func (this *RealtimeVoiceClient) handleASRStarted(msg *Message) error {
 	if this.enableEventLog {
 		this.log.Info("ASR Started - User started speaking")
 	}
+	this.isUserQuerying.Store(true)
 	if this.OnInterrupt != nil {
 		go this.OnInterrupt() // 异步执行
 	}
@@ -190,6 +194,7 @@ func (this *RealtimeVoiceClient) handleASREnded(msg *Message) error {
 	if this.enableEventLog {
 		this.log.Info("ASR Ended - User stopped speaking")
 	}
+	this.isUserQuerying.Store(false)
 	// Critical timing: this is when ChatTTSText should be sent
 	if this.OnASREnded != nil {
 		go this.OnASREnded() // 🎯 异步执行 - 最关键的修复！
@@ -202,9 +207,14 @@ func (this *RealtimeVoiceClient) handleTTSSentenceStart(msg *Message) error {
 	if this.enableEventLog {
 		this.log.Info("TTS Sentence Start")
 	}
-
+	if !this.isSendingChatTTSText.Load() {
+		return nil
+	}
 	var payload TTSSentenceStartResponse
 	if err := json.Unmarshal(msg.Payload, &payload); err == nil {
+		if lo.Contains([]string{"chat_tts_text", "external_rag"}, payload.TTSType) {
+			this.isSendingChatTTSText.Store(false)
+		}
 		if this.OnTTSStart != nil {
 			metadata := &MsgMetadata{
 				TTSType:    payload.TTSType,
