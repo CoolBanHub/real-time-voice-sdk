@@ -7,11 +7,12 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/go-kratos/kratos/v2/log"
+	"github.com/CoolBanHub/real-time-voice-sdk/pkg/log"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -125,10 +126,14 @@ type RealtimeVoiceClient struct {
 	log            *log.Helper
 
 	// Connection state management
-	stateManager      *connectionStateManager
-	reconnectConfig   *ReconnectConfig
-	stopReconnect     chan struct{} // Signal to stop reconnection attempts
-	isManuallyClosing bool          // Flag to distinguish manual close from connection errors
+	stateManager         *connectionStateManager
+	reconnectConfig      *ReconnectConfig
+	stopReconnect        chan struct{} // Signal to stop reconnection attempts
+	isManuallyClosing    bool          // Flag to distinguish manual close from connection errors
+	LatestARSContent     string
+	latestARSContentLock sync.Mutex
+	LatestAIResponse     string
+	latestAIResponseLock sync.Mutex
 }
 
 func NewRealtimeVoiceClient(cfg *RealtimeVoiceClientConfig) *RealtimeVoiceClient {
@@ -142,7 +147,11 @@ func NewRealtimeVoiceClient(cfg *RealtimeVoiceClientConfig) *RealtimeVoiceClient
 	if cfg.SessionId == "" {
 		cfg.SessionId = uuid.New().String()
 	}
-
+	if cfg.Log == nil {
+		logger := log.NewStdLogger(os.Stdout)
+		logger = log.With(logger, "caller", log.Caller(4), "ts", log.DefaultTimestamp)
+		cfg.Log = log.NewHelper(log.With(logger, "module", "realtime_voce"))
+	}
 	// 初始化重连配置
 	reconnectConfig := cfg.Reconnect
 	if reconnectConfig == nil {
@@ -415,6 +424,63 @@ func (this *RealtimeVoiceClient) startSession(req *StartSessionPayload) error {
 	return nil
 }
 
+func (this *RealtimeVoiceClient) UpdateSession(req *StartSessionPayload) error {
+	if this.doubaoWSConn == nil {
+		return ErrNotConnected
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal StartSession request payload: %w", err)
+	}
+
+	msg, err := NewMessage(MsgTypeFullClient, MsgTypeFlagWithEvent)
+	if err != nil {
+		return fmt.Errorf("create StartSession request message: %w", err)
+	}
+	msg.Event = EVENT_START_SESSION
+	msg.SessionID = this.SessionId
+	msg.Payload = payload
+
+	frame, err := this.protocol.Marshal(msg)
+	//this.log.Infof("StartSession request frame: %v", frame)
+	if err != nil {
+		return fmt.Errorf("marshal StartSession request message: %w", err)
+	}
+	if err := this.sendRequest(this.doubaoWSConn, frame); err != nil {
+
+		return fmt.Errorf("send StartSession request: %w", err)
+	}
+
+	// Read SessionStarted message.
+	mt, frame, err := this.doubaoWSConn.ReadMessage()
+	if err != nil {
+		return fmt.Errorf("read SessionStarted response: %w", err)
+	}
+	if mt != websocket.BinaryMessage && mt != websocket.TextMessage {
+		return fmt.Errorf("unexpected Websocket message type: %d", mt)
+	}
+
+	// Validate SessionStarted message.
+	msg, _, err = Unmarshal(frame, this.protocol.containsSequence)
+	if err != nil {
+		this.log.Infof("StartSession response: %s", frame)
+		return fmt.Errorf("unmarshal SessionStarted response message: %w", err)
+	}
+	if msg.Type != MsgTypeFullServer {
+		return fmt.Errorf("unexpected SessionStarted message type: %s", msg.Type)
+	}
+	if msg.Event != 150 {
+		return fmt.Errorf("unexpected response event (%d) for StartSession request", msg.Event)
+	}
+	this.log.Infof("SessionStarted response payload: %v", string(msg.Payload))
+	var jsonData map[string]interface{}
+	if err := json.Unmarshal(msg.Payload, &jsonData); err != nil {
+		return fmt.Errorf("unmarshal SessionStarted response payload: %w", err)
+	}
+	this.dialogID = jsonData["dialog_id"].(string)
+	return nil
+}
+
 func (this *RealtimeVoiceClient) SayHello(req *SayHelloPayload) error {
 	if this.doubaoWSConn == nil {
 		return ErrNotConnected
@@ -559,6 +625,160 @@ func (this *RealtimeVoiceClient) ChatRAGText(req *ChatRAGTextPayload) error {
 	}
 	if err := this.sendRequest(this.doubaoWSConn, frame); err != nil {
 		return fmt.Errorf("send ChatRAGText request: %w", err)
+	}
+	return nil
+}
+
+// ConversationRetrieve 查询上下文
+// 查询规则：
+// - 未传入item_id（req为nil或Items为空）返回最近20轮完整对话上下文
+// - 传入item_id返回指定item_id所在轮次的上下文记录
+func (this *RealtimeVoiceClient) ConversationRetrieve(req *ConversationRetrievePayload) error {
+	if this.doubaoWSConn == nil {
+		return ErrNotConnected
+	}
+
+	// 如果req为nil，创建一个空的payload（查询最近20轮）
+	if req == nil {
+		req = &ConversationRetrievePayload{}
+	}
+
+	payload, err := json.Marshal(req)
+	this.log.Infof("ConversationRetrieve request payload: %s", string(payload))
+	if err != nil {
+		return fmt.Errorf("marshal ConversationRetrieve request payload: %w", err)
+	}
+
+	this.protocol.SetSerialization(SerializationJSON)
+	msg, err := NewMessage(MsgTypeFullClient, MsgTypeFlagWithEvent)
+	if err != nil {
+		return fmt.Errorf("create ConversationRetrieve request message: %w", err)
+	}
+	msg.Event = EVENT_CONVERSATION_RETRIEVE
+	msg.SessionID = this.SessionId
+	msg.Payload = payload
+
+	frame, err := this.protocol.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal ConversationRetrieve request message: %w", err)
+	}
+	if err := this.sendRequest(this.doubaoWSConn, frame); err != nil {
+		return fmt.Errorf("send ConversationRetrieve request: %w", err)
+	}
+	return nil
+}
+
+// ConversationCreate 创建上下文
+// 上下文追加规则：
+// - 每次仅允许提交一条问答（QA）记录
+// - 若未提供时间戳，则将该记录追加至当前上下文末尾
+// - 若提供时间戳，则按时间顺序将该记录插入到上下文中
+// - 时间戳策略需保持一致：要么所有记录均携带时间戳，要么全部不携带，不能混用
+func (this *RealtimeVoiceClient) ConversationCreate(req *ConversationCreatePayload) error {
+	if this.doubaoWSConn == nil {
+		return ErrNotConnected
+	}
+	if req == nil {
+		return fmt.Errorf("ConversationCreate request payload cannot be nil")
+	}
+
+	payload, err := json.Marshal(req)
+	this.log.Infof("ConversationCreate request payload: %s", string(payload))
+	if err != nil {
+		return fmt.Errorf("marshal ConversationCreate request payload: %w", err)
+	}
+
+	this.protocol.SetSerialization(SerializationJSON)
+	msg, err := NewMessage(MsgTypeFullClient, MsgTypeFlagWithEvent)
+	if err != nil {
+		return fmt.Errorf("create ConversationCreate request message: %w", err)
+	}
+	msg.Event = EVENT_CONVERSATION_CREATE
+	msg.SessionID = this.SessionId
+	msg.Payload = payload
+
+	frame, err := this.protocol.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal ConversationCreate request message: %w", err)
+	}
+	if err := this.sendRequest(this.doubaoWSConn, frame); err != nil {
+		return fmt.Errorf("send ConversationCreate request: %w", err)
+	}
+	return nil
+}
+
+// ConversationUpdate 更新上下文
+// 更新上下文规则（用于更新指定 item_id 对应消息的文本内容）：
+// - item_id 可以是 question_id（更新用户问题）或 reply_id（更新模型回复内容）
+// - question_id 表示当前轮次中用户query的item_id，在一轮对话中不会变化
+// - reply_id 表示当前轮次中模型回复消息的item_id
+func (this *RealtimeVoiceClient) ConversationUpdate(req *ConversationUpdatePayload) error {
+	if this.doubaoWSConn == nil {
+		return ErrNotConnected
+	}
+	if req == nil {
+		return fmt.Errorf("ConversationUpdate request payload cannot be nil")
+	}
+
+	payload, err := json.Marshal(req)
+	this.log.Infof("ConversationUpdate request payload: %s", string(payload))
+	if err != nil {
+		return fmt.Errorf("marshal ConversationUpdate request payload: %w", err)
+	}
+
+	this.protocol.SetSerialization(SerializationJSON)
+	msg, err := NewMessage(MsgTypeFullClient, MsgTypeFlagWithEvent)
+	if err != nil {
+		return fmt.Errorf("create ConversationUpdate request message: %w", err)
+	}
+	msg.Event = EVENT_CONVERSATION_UPDATE
+	msg.SessionID = this.SessionId
+	msg.Payload = payload
+
+	frame, err := this.protocol.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal ConversationUpdate request message: %w", err)
+	}
+	if err := this.sendRequest(this.doubaoWSConn, frame); err != nil {
+		return fmt.Errorf("send ConversationUpdate request: %w", err)
+	}
+	return nil
+}
+
+// ConversationDelete 删除上下文
+// 删除上下文规则：
+// - 删除操作以对话轮为单位进行
+// - 当传入某条用户侧的 item_id 时，将同时删除与之成对的助手回复记录（即整轮对话一起删除）
+// - 同理，若传入助手侧 item_id，系统也会删除与其对应的用户消息，确保上下文不出现不完整对话
+func (this *RealtimeVoiceClient) ConversationDelete(req *ConversationDeletePayload) error {
+	if this.doubaoWSConn == nil {
+		return ErrNotConnected
+	}
+	if req == nil {
+		return fmt.Errorf("ConversationDelete request payload cannot be nil")
+	}
+
+	payload, err := json.Marshal(req)
+	this.log.Infof("ConversationDelete request payload: %s", string(payload))
+	if err != nil {
+		return fmt.Errorf("marshal ConversationDelete request payload: %w", err)
+	}
+
+	this.protocol.SetSerialization(SerializationJSON)
+	msg, err := NewMessage(MsgTypeFullClient, MsgTypeFlagWithEvent)
+	if err != nil {
+		return fmt.Errorf("create ConversationDelete request message: %w", err)
+	}
+	msg.Event = EVENT_CONVERSATION_DELETE
+	msg.SessionID = this.SessionId
+	msg.Payload = payload
+
+	frame, err := this.protocol.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal ConversationDelete request message: %w", err)
+	}
+	if err := this.sendRequest(this.doubaoWSConn, frame); err != nil {
+		return fmt.Errorf("send ConversationDelete request: %w", err)
 	}
 	return nil
 }
@@ -804,4 +1024,53 @@ type ChatRAGTextPayload struct {
 type RAGObject struct {
 	Title   string `json:"title"`
 	Content string `json:"content"`
+}
+
+// ConversationCreatePayload 创建上下文请求结构
+type ConversationCreatePayload struct {
+	Items []ConversationCreateItem `json:"items"`
+}
+
+// ConversationCreateItem 上下文创建项
+// Role: 角色，通常是 "user" 或 "assistant"
+// Text: 对话文本内容
+// Timestamp: 可选时间戳，若提供则按时间顺序插入
+type ConversationCreateItem struct {
+	Role      string `json:"role"`
+	Text      string `json:"text"`
+	Timestamp *int64 `json:"timestamp,omitempty"`
+}
+
+// ConversationUpdatePayload 更新上下文请求结构
+type ConversationUpdatePayload struct {
+	Items []ConversationUpdateItem `json:"items"`
+}
+
+// ConversationUpdateItem 上下文更新项
+// ItemID: question_id 或 reply_id
+// Text: 更新后的文本内容
+type ConversationUpdateItem struct {
+	ItemID string `json:"item_id"`
+	Text   string `json:"text"`
+}
+
+// ConversationRetrievePayload 查询上下文请求结构
+type ConversationRetrievePayload struct {
+	Items []ConversationRetrieveItem `json:"items,omitempty"`
+}
+
+// ConversationRetrieveItem 上下文查询项
+type ConversationRetrieveItem struct {
+	ItemID string `json:"item_id,omitempty"`
+}
+
+// ConversationDeletePayload 删除上下文请求结构
+type ConversationDeletePayload struct {
+	Items []ConversationDeleteItem `json:"items"`
+}
+
+// ConversationDeleteItem 上下文删除项
+// ItemID: question_id 或 reply_id，删除整轮对话
+type ConversationDeleteItem struct {
+	ItemID string `json:"item_id"`
 }

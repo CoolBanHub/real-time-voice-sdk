@@ -16,14 +16,8 @@ import (
 	"github.com/gordonklaus/portaudio"
 )
 
-type RAGObject struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
-}
-
 // 使用 PortAudio 前需要安装系统依赖：
 func main() {
-
 	// 从环境变量读取配置
 	appID := os.Getenv("DOUBAO_APP_ID")
 	accessToken := os.Getenv("DOUBAO_ACCESS_TOKEN")
@@ -41,19 +35,51 @@ func main() {
 	logger = log.With(logger, "caller", log.Caller(4), "ts", log.DefaultTimestamp)
 	helper := log.NewHelper(log.With(logger, "module", "portaudio_realtime"))
 	fmt.Println("==============================================")
-	fmt.Println("  豆包实时语音对话示例 (PortAudio)")
+	fmt.Println("  English Pronunciation Practice (PortAudio)")
 	fmt.Println("==============================================")
 	fmt.Println()
 
-	// 配置客户端
+	// 配置客户端 - 英语陪练专用配置
 	cfg := &doubao.RealtimeVoiceClientConfig{
 		Appid:          appID,
 		AccessToken:    accessToken,
-		Speaker:        "zh_female_vv_jupiter_bigtts", // 音色配置
+		Speaker:        "zh_female_vv_jupiter_bigtts", // 使用英文音色
 		Log:            helper,
 		EnableEventLog: true,
-		// 启用 PortAudio 实时音频捕获和播放
-		// 可选：自定义重连配置
+		// ASR 配置
+		ASR: &doubao.ASRPayload{
+			Format:  "pcm",
+			Rate:    16000, // 客户端录音采样率为16kHz
+			Bits:    16,
+			Channel: 1,
+			Extra: map[string]interface{}{
+				"enable_itn_convert": true,
+				//"end_smooth_window_ms": 1500,
+			},
+		},
+		// TTS 配置 - 使用英文音色
+		TTS: &doubao.TTSPayload{
+			Speaker: "zh_female_vv_jupiter_bigtts", // 英文女声，自然流畅
+			AudioConfig: doubao.AudioConfig{
+				Channel:    1,
+				Format:     "pcm_s16le",
+				SampleRate: 24000,
+			},
+		},
+		// Dialog 配置 - 中英双语发音纠正教练
+		Dialog: &doubao.DialogPayload{
+			BotName:       "IntentionAgent",
+			SystemRole:    "你是一个用户意图识别助手。你的任务是分析用户的输入，判断用户的意图属于'闲聊'还是'音乐类'。闲聊包括问候、聊天、询问天气等日常对话；音乐类包括播放音乐、搜索歌曲、调整音量、暂停/播放等与音乐相关的请求。",
+			SpeakingStyle: "你必须严格按照JSON格式回复，不要说其他内容。回复格式为：{\"intent\": \"闲聊\"} 或 {\"intent\": \"音乐类\"}。只回复这个JSON对象，不要添加任何解释或其他文字。",
+			Extra: map[string]interface{}{
+				"strict_audit":   false,
+				"input_mod":      "audio",
+				"model":          "O",
+				"audit_response": "抱歉，我没听清楚。你能再说一遍吗？",
+				// 网络搜索功能默认禁用
+				"enable_volc_websearch": false,
+			},
+		},
 		Reconnect: &doubao.ReconnectConfig{
 			Enabled:           true,
 			MaxAttempts:       5,
@@ -108,40 +134,54 @@ func main() {
 	go p.startPlayer()
 	// 说明信息
 	printUsageInfo()
-	time.Sleep(time.Second)
-	// 要合成的文本列表
-	go func() { //收到用户说话结束后才会开始触发！
-		textsToSpeak := []string{
-			"你好，我是小金，一个中文语音助手。",
-			"今天天气真不错，适合出去走走。",
-			"人工智能正在改变我们的生活。",
-			"祝你有美好的一天！",
+	go func() {
+		time.Sleep(time.Second * 10)
+		for i := 0; i < 50; i++ {
+			err := client.ConversationRetrieve(&doubao.ConversationRetrievePayload{nil})
+			if err != nil {
+				println(err.Error())
+			}
+			time.Sleep(time.Second * 5)
 		}
 
-		// 依次合成每段文本
-		for i, text := range textsToSpeak {
-			fmt.Printf("\n[文本 %d] %s\n", i+1, text)
-			//client.SayHello(&doubao.SayHelloPayload{Content: text})
-			client.SpeakText(text)
-			// 等待 TTS 完成
-			// 在实际应用中，应该使用事件回调来判断何时完成
-			time.Sleep(10 * time.Second)
-		}
 	}()
 
-	//// 依次合成每段文本
-	//for i, text := range textsToSpeak {
-	//	fmt.Printf("\n[文本 %d] %s\n", i+1, text)
+	time.Sleep(time.Second * 10)
+	err := client.SpeakText("从现在开始你是一个翻译师，负责把我说的中文翻译成英文，如果准备好了的话就回复，我接下来是你的翻译助手！")
+	if err != nil {
+		println(err.Error())
+	}
+	//go func() {
+	//	time.Sleep(time.Second * 10)
+	//	client.UpdateSession(&doubao.StartSessionPayload{
+	//		ASR: doubao.ASRPayload{Format: "pcm",
+	//			Rate:    16000, // 客户端录音采样率为16kHz
+	//			Bits:    16,
+	//			Channel: 1,
+	//			Extra: map[string]interface{}{
+	//				"enable_itn_convert": true,
+	//				//"end_smooth_window_ms": 1500,
+	//			}},
+	//		TTS: doubao.TTSPayload{Speaker: "zh_female_vv_jupiter_bigtts", // 英文女声，自然流畅
+	//			AudioConfig: doubao.AudioConfig{
+	//				Channel:    1,
+	//				Format:     "pcm_s16le",
+	//				SampleRate: 24000,
+	//			}},
+	//		Dialog: doubao.DialogPayload{BotName: "Emma",
+	//			SystemRole:    "你是 Emma，一位专业的英语发音教练。你的学生是中国人，英语基础可能不太好，所以你需要用中文和英文混合教学。你的主要任务是评估和改善学生的英语发音。仔细聆听学生的发音，评估其清晰度、语调、重音模式和单个音素。当发现发音问题时，用中文清楚地解释哪些音或单词发音不标准以及原因，然后用英文示范正确发音，并让学生跟读练习。",
+	//			SpeakingStyle: "专业但鼓励的态度，中英文混合使用。用中文解释发音问题和给予反馈，用英文示范正确发音。学生说完后，先用中文肯定他们的努力，然后具体指出发音问题。如果发音好，用中文表扬并鼓励继续。如果有问题，用中文用简单的语言解释（例如：'th 这个音需要把舌头放在牙齿之间'），然后用英文清晰、缓慢地示范正确发音，并要求学生重复。使用类似'我来示范一下：[英文单词/短语]。现在你跟着说。'或'注意我重读第一个音节：[英文单词]。你能重复一遍吗？'这样的表达。一次专注于一到两个发音要点，避免让学习者感到压力过大。记住：讲解用中文，示范用英文。",
+	//			Extra: map[string]interface{}{
+	//				"strict_audit":   false,
+	//				"input_mod":      "audio",
+	//				"model":          "O",
+	//				"audit_response": "抱歉，我没听清楚。你能再说一遍吗？",
+	//				// 网络搜索功能默认禁用
+	//				"enable_volc_websearch": false,
+	//			}},
+	//	})
 	//
-	//	if err := client.ChatTextQuery(&doubao.ChatTextQueryPayload{Content: text}); err != nil {
-	//		fmt.Printf("  [错误] 发送失败: %v\n", err)
-	//		continue
-	//	}
-	//
-	//	// 等待 TTS 完成
-	//	// 在实际应用中，应该使用事件回调来判断何时完成
-	//	time.Sleep(5 * time.Second)
-	//}
+	//}()
 	// 等待用户中断
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -162,7 +202,7 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient, portaudio *Portaudio) {
 	// ASR 最终识别结果（用户说的话）
 	client.OnInputTranscript = func(text string, isFinal bool) {
 		if isFinal {
-			fmt.Printf("\n💬 [你说] %s\n", text)
+			fmt.Printf("\n💬 [You] %s\n", text)
 		}
 	}
 
@@ -174,12 +214,13 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient, portaudio *Portaudio) {
 
 	// ASR 结束（用户停止说话）
 	client.OnASREnded = func() {
-		fmt.Println("  [ASR] 识别结束")
+		fmt.Printf("  [ASR] 识别结束:%s\n", client.LatestARSContent)
+
 	}
 
 	// TTS 开始（AI 开始说话）
 	client.OnTTSStart = func(metadata *doubao.MsgMetadata) {
-		fmt.Printf("\n🔊 [AI 说话] 开始播放...\n")
+		fmt.Printf("\n🔊 [Emma] Speaking...\n")
 		portaudio.clearBuffer()
 	}
 
@@ -196,7 +237,7 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient, portaudio *Portaudio) {
 
 	// LLM 响应结束
 	client.OnChatEnded = func(msg *doubao.Message) {
-		fmt.Println("  [响应] 完成")
+		fmt.Printf("  [响应] 完成: %s\n", client.LatestAIResponse)
 	}
 
 	// 用户打断
@@ -227,23 +268,26 @@ func setupCallbacks(client *doubao.RealtimeVoiceClient, portaudio *Portaudio) {
 }
 
 const (
-	sampleRate      = 24000
-	channels        = 1
-	framesPerBuffer = 512
-	bufferSeconds   = 100 // 最多缓冲100秒数据
-	DefaultPCM      = "pcm"
-	PcmS16LE        = "pcm_s16le"
+	sampleRate       = 24000
+	channels         = 1
+	framesPerBuffer  = 1024 // 增大帧缓冲，减少CPU切换，提高流畅度
+	bufferSeconds    = 100  // 最多缓冲100秒数据
+	minBufferSamples = 4800 // 预缓冲阈值：200ms音频数据 (24000 * 0.2)
+	preBufferSamples = 9600 // 初始预缓冲：400ms音频数据 (24000 * 0.4)
+	DefaultPCM       = "pcm"
+	PcmS16LE         = "pcm_s16le"
 )
 
 type Portaudio struct {
-	ctx       context.Context
-	log       *log.Helper
-	client    *doubao.RealtimeVoiceClient
-	pcmFormat string
-	buffer    []float32
-	s16Buffer []int16
-	//使用播报语音的
-	bufferLock sync.Mutex
+	ctx            context.Context
+	log            *log.Helper
+	client         *doubao.RealtimeVoiceClient
+	pcmFormat      string
+	buffer         []float32
+	s16Buffer      []int16
+	bufferLock     sync.Mutex
+	isBuffering    bool      // 是否正在预缓冲
+	bufferingSince time.Time // 开始缓冲的时间
 }
 
 func (this *Portaudio) Init() func() error {
@@ -291,7 +335,7 @@ func (this *Portaudio) sendAudioByPortAudio() {
 		if this.client != nil {
 			err := this.client.SendAudio(audioBytes)
 			if err != nil {
-				this.log.Error(err)
+				//this.log.Error(err)
 				return
 			}
 		}
@@ -365,6 +409,16 @@ func (this *Portaudio) startPlayer() {
 		outputStream, err = portaudio.OpenStream(outputParameters, func(out []int16) {
 			this.bufferLock.Lock()
 			defer this.bufferLock.Unlock()
+
+			// 如果正在预缓冲或缓冲不足，输出静音
+			if this.isBuffering || len(this.s16Buffer) < minBufferSamples {
+				for i := range out {
+					out[i] = 0
+				}
+				return
+			}
+
+			// 缓冲充足，正常播放
 			if len(this.s16Buffer) < len(out) {
 				copy(out, this.s16Buffer)
 				for i := len(this.s16Buffer); i < len(out); i++ {
@@ -410,7 +464,23 @@ func (this *Portaudio) handleIncomingAudio(data []byte) {
 		// 将音频加载到缓冲区
 		this.bufferLock.Lock()
 		defer this.bufferLock.Unlock()
+
+		// 如果是第一次收到音频，开始预缓冲
+		if len(this.s16Buffer) == 0 && !this.isBuffering {
+			this.isBuffering = true
+			this.bufferingSince = time.Now()
+			this.log.Info("Starting audio pre-buffering for smooth playback...")
+		}
+
 		this.s16Buffer = append(this.s16Buffer, samples...)
+
+		// 预缓冲完成检查
+		if this.isBuffering && len(this.s16Buffer) >= preBufferSamples {
+			this.isBuffering = false
+			duration := time.Since(this.bufferingSince)
+			this.log.Infof("Pre-buffering complete: %d samples buffered in %v", len(this.s16Buffer), duration)
+		}
+
 		if len(this.s16Buffer) > sampleRate*bufferSeconds {
 			this.s16Buffer = this.s16Buffer[len(this.s16Buffer)-(sampleRate*bufferSeconds):]
 		}
@@ -436,31 +506,37 @@ func (this *Portaudio) clearBuffer() {
 	this.bufferLock.Lock()
 	this.buffer = this.buffer[:0]
 	this.s16Buffer = this.s16Buffer[:0]
+	this.isBuffering = false // 重置缓冲状态
 	this.bufferLock.Unlock()
+	this.log.Info("Audio buffer cleared, ready for next playback")
 }
 
 func printUsageInfo() {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("  💡 使用说明")
+	fmt.Println("  💡 How to Use - Pronunciation Practice")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
-	fmt.Println("  1. 🎤 对着麦克风说话")
-	fmt.Println("     - 系统会实时识别你的语音")
-	fmt.Println("     - 识别结果会显示在屏幕上")
+	fmt.Println("  1. 🎤 Speak English into your microphone")
+	fmt.Println("     - Emma will analyze your pronunciation")
+	fmt.Println("     - She'll evaluate clarity, stress, and sounds")
 	fmt.Println()
-	fmt.Println("  2. 🔊 AI 会通过扬声器回复")
-	fmt.Println("     - 自动播放 AI 的语音回复")
-	fmt.Println("     - 回复文本会同步显示")
+	fmt.Println("  2. � Receive pronunciation feedback")
+	fmt.Println("     - Emma will point out any issues")
+	fmt.Println("     - She'll explain what needs improvement")
 	fmt.Println()
-	fmt.Println("  3. ⚡ 实时交互")
-	fmt.Println("     - 支持多轮对话")
-	fmt.Println("     - 可以打断 AI 的回复")
+	fmt.Println("  3. 🔊 Listen and repeat")
+	fmt.Println("     - Emma demonstrates correct pronunciation")
+	fmt.Println("     - Practice by repeating after her")
 	fmt.Println()
-	fmt.Println("  4. 🛑 退出程序")
-	fmt.Println("     - 按 Ctrl+C 退出")
+	fmt.Println("  4. 🎯 Focus on improvement")
+	fmt.Println("     - Work on specific sounds or words")
+	fmt.Println("     - Emma addresses 1-2 points at a time")
+	fmt.Println()
+	fmt.Println("  5. 🛑 Exit Program")
+	fmt.Println("     - Press Ctrl+C to quit")
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
-	fmt.Println("🎙️  麦克风已就绪，请开始说话...")
+	fmt.Println("🎙️  Ready for pronunciation practice. Speak clearly!")
 	fmt.Println()
 }

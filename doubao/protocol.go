@@ -8,7 +8,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/golang/glog"
+	"github.com/CoolBanHub/real-time-voice-sdk/pkg/log"
 )
 
 // Protocol-level errors that can occur during binary protocol serialization/deserialization
@@ -326,16 +326,16 @@ func Unmarshal(data []byte, containsSequence ContainsSequenceFunc) (*Message, *B
 		versionAndHeaderSize: versionSize,
 		containsSequence:     containsSequence,
 	}
-	glog.V(2).Infof("Read version: %04b", versionSize>>4)
-	glog.V(2).Infof("Read size: %04b", versionSize&0b1111)
+	log.Infof("Read version: %04b", versionSize>>4)
+	log.Infof("Read size: %04b", versionSize&0b1111)
 
 	typeAndFlag, err := buf.ReadByte()
 	if err != nil {
 		return nil, nil, ErrProtocolNoTypeAndFlag
 	}
 	readSize++
-	glog.V(2).Infof("Read message type: %04b", typeAndFlag>>4)
-	glog.V(2).Infof("Read message type specific flag: %04b", typeAndFlag&0b1111)
+	log.Infof("Read message type: %04b", typeAndFlag>>4)
+	log.Infof("Read message type specific flag: %04b", typeAndFlag&0b1111)
 
 	msg, err := NewMessageFromByte(typeAndFlag)
 	if err != nil {
@@ -346,8 +346,8 @@ func Unmarshal(data []byte, containsSequence ContainsSequenceFunc) (*Message, *B
 	if err != nil {
 		return nil, nil, ErrProtocolNoSerializationAndCompression
 	}
-	glog.V(2).Infof("Read serialization method: %04b", serializationCompression>>4)
-	glog.V(2).Infof("Read compression method: %04b", serializationCompression&0b1111)
+	log.Infof("Read serialization method: %04b", serializationCompression>>4)
+	log.Infof("Read compression method: %04b", serializationCompression&0b1111)
 	readSize++
 	prot.serializationAndCompression = serializationCompression
 	if _, ok := serializations[prot.Serialization()]; !ok {
@@ -438,16 +438,16 @@ func (m *Message) writers(compress CompressFunc) (writers []writeFunc, _ error) 
 
 	if containsSequence(m.TypeFlag()) {
 		writers = append(writers, m.writeSequence)
-		glog.Info("Add Sequence writer.")
+		log.Info("Add Sequence writer.")
 	}
 
 	if containsEvent(m.TypeFlag()) {
 		writers = append(writers, m.writeEvent, m.writeSessionID)
-		glog.V(1).Info("Add Event and SessionID writer.")
+		log.Info("Add Event and SessionID writer.")
 	}
 
 	writers = append(writers, m.writePayload)
-	glog.V(1).Info("Add Payload writers.")
+	log.Info("Add Payload writers.")
 	return writers, nil
 }
 
@@ -461,7 +461,7 @@ func (m *Message) writeEvent(buf *bytes.Buffer) error {
 func (m *Message) writeSessionID(buf *bytes.Buffer) error {
 	switch m.Event {
 	case 1, 2, 50, 51, 52: // StartConnection, FinishConnection, ConnectionStarted, ConnectionFailed, ConnectionFinished
-		glog.V(1).Infof("Skip writing session ID for event: %d", m.Event)
+		log.Infof("Skip writing session ID for event: %d", m.Event)
 		return nil
 	}
 
@@ -510,18 +510,18 @@ func (m *Message) readers(containsSequence ContainsSequenceFunc) (readers []read
 	case MsgTypeAudioOnlyClient:
 		if containsSequence == nil || containsSequence(m.TypeFlag()) {
 			readers = append(readers, m.readSequence)
-			glog.V(1).Info("AudioOnlyClient message: add Sequence reader.")
+			log.Info("AudioOnlyClient message: add Sequence reader.")
 		}
 
 	case MsgTypeAudioOnlyServer:
 		if containsSequence != nil && containsSequence(m.TypeFlag()) {
 			readers = append(readers, m.readSequence)
-			glog.V(1).Info("AudioOnlyServer message: add Sequence reader.")
+			log.Info("AudioOnlyServer message: add Sequence reader.")
 		}
 
 	case MsgTypeError:
 		readers = append(readers, m.readErrorCode)
-		glog.V(1).Info("Error message: add Error-Code reader.")
+		log.Info("Error message: add Error-Code reader.")
 
 	default:
 		return nil, fmt.Errorf("cannot deserialize message with invalid type: %d", m.Type)
@@ -529,11 +529,11 @@ func (m *Message) readers(containsSequence ContainsSequenceFunc) (readers []read
 
 	if containsEvent(m.TypeFlag()) {
 		readers = append(readers, m.readEvent, m.readSessionID, m.readConnectID)
-		glog.V(1).Info("Add Event and SessionID readers.")
+		log.Info("Add Event and SessionID readers.")
 	}
 
 	readers = append(readers, m.readPayload)
-	glog.V(1).Info("Add Payload reader.")
+	log.Info("Add Payload reader.")
 	return readers, nil
 }
 
@@ -541,14 +541,14 @@ func (m *Message) readEvent(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &m.Event); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadEvent, err)
 	}
-	glog.V(1).Infof("Read Event: %d", m.Event)
+	log.Infof("Read Event: %d", m.Event)
 	return nil
 }
 
 func (m *Message) readSessionID(buf *bytes.Buffer) error {
 	switch m.Event {
 	case 1, 2, 50, 51, 52: //StartConnection, FinishConnection, ConnectionStarted, ConnectionFailed, ConnectionFinished
-		glog.V(1).Infof("Skip reading session ID for event: %d", m.Event)
+		log.Infof("Skip reading session ID for event: %d", m.Event)
 		return nil
 	}
 
@@ -556,12 +556,12 @@ func (m *Message) readSessionID(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &size); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadSessionIDSize, err)
 	}
-	glog.V(2).Infof("Read SessionID length: %d", size)
+	log.Infof("Read SessionID length: %d", size)
 
 	if size > 0 {
 		m.SessionID = string(buf.Next(int(size)))
 	}
-	glog.V(2).Infof("Read SessionID content: %s", m.SessionID)
+	log.Infof("Read SessionID content: %s", m.SessionID)
 	return nil
 }
 
@@ -569,7 +569,7 @@ func (m *Message) readConnectID(buf *bytes.Buffer) error {
 	switch m.Event {
 	case 50, 51, 52: // ConnectionStarted, event.Type_ConnectionFailed, ConnectionFinished
 	default:
-		glog.V(1).Infof("Skip reading session ID for event: %d", m.Event)
+		log.Infof("Skip reading session ID for event: %d", m.Event)
 		return nil
 	}
 
@@ -577,12 +577,12 @@ func (m *Message) readConnectID(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &size); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadConnectIDSize, err)
 	}
-	glog.V(2).Infof("Read connection ID length: %d", size)
+	log.Infof("Read connection ID length: %d", size)
 
 	if size > 0 {
 		m.ConnectID = string(buf.Next(int(size)))
 	}
-	glog.V(2).Infof("Read connection ID content: %s", m.ConnectID)
+	log.Infof("Read connection ID content: %s", m.ConnectID)
 	return nil
 }
 
@@ -590,7 +590,7 @@ func (m *Message) readSequence(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &m.Sequence); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadSequence, err)
 	}
-	glog.V(2).Infof("Read Sequence: %d", m.Sequence)
+	log.Infof("Read Sequence: %d", m.Sequence)
 	return nil
 }
 
@@ -598,7 +598,7 @@ func (m *Message) readErrorCode(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &m.ErrorCode); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadErrorCode, err)
 	}
-	glog.V(2).Infof("Read ErrorCode: %d", m.ErrorCode)
+	log.Infof("Read ErrorCode: %d", m.ErrorCode)
 	return nil
 }
 
@@ -607,13 +607,13 @@ func (m *Message) readPayload(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &size); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadPayloadSize, err)
 	}
-	glog.V(2).Infof("Read Payload length: %d", size)
+	log.Infof("Read Payload length: %d", size)
 
 	if size > 0 {
 		m.Payload = buf.Next(int(size))
 	}
 	if m.Type == MsgTypeFullClient || m.Type == MsgTypeFullServer || m.Type == MsgTypeError {
-		glog.V(2).Infof("Read Payload content: %s", m.Payload)
+		log.Infof("Read Payload content: %s", m.Payload)
 	}
 	return nil
 }

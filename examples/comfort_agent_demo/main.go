@@ -16,14 +16,8 @@ import (
 	"github.com/gordonklaus/portaudio"
 )
 
-type RAGObject struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
-}
-
 // 使用 PortAudio 前需要安装系统依赖：
 func main() {
-
 	// 从环境变量读取配置
 	appID := os.Getenv("DOUBAO_APP_ID")
 	accessToken := os.Getenv("DOUBAO_ACCESS_TOKEN")

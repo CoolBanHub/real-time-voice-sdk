@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/CoolBanHub/real-time-voice-sdk/doubao"
-	"github.com/go-kratos/kratos/v2/log"
+	"github.com/CoolBanHub/real-time-voice-sdk/pkg/log"
 )
 
 const (

@@ -53,9 +53,7 @@ func (this *RealtimeVoiceClient) handleMessage() {
 			}
 			return
 		}
-		if this.enableEventLog {
-			this.log.Infof("Receive message: %+v", msg)
-		}
+
 		// Handle Audio (ServerACK)
 		if msg.Type == MsgTypeAudioOnlyServer && len(msg.Payload) > 0 {
 			if this.enableEventLog {
@@ -66,7 +64,19 @@ func (this *RealtimeVoiceClient) handleMessage() {
 			}
 			continue
 		}
-
+		if this.enableEventLog {
+			stringPayload := MessageByStringPayload{
+				Type:            msg.Type,
+				typeAndFlagBits: msg.typeAndFlagBits,
+				Event:           msg.Event,
+				SessionID:       msg.SessionID,
+				ConnectID:       msg.ConnectID,
+				Sequence:        msg.Sequence,
+				ErrorCode:       msg.ErrorCode,
+				Payload:         string(msg.Payload),
+			}
+			this.log.Infof("Receive message : %+v", stringPayload)
+		}
 		// Handle FullServer events
 		if msg.Type == MsgTypeFullServer {
 			eventName := GetEventName(msg.Event)
@@ -164,6 +174,9 @@ func (this *RealtimeVoiceClient) handleASRStarted(msg *Message) error {
 	if this.enableEventLog {
 		this.log.Info("ASR Started - User started speaking")
 	}
+	this.latestARSContentLock.Lock()
+	this.LatestARSContent = ""
+	this.latestARSContentLock.Unlock()
 	this.isUserQuerying.Store(true)
 	if this.OnInterrupt != nil {
 		go this.OnInterrupt() // 异步执行
@@ -178,10 +191,14 @@ func (this *RealtimeVoiceClient) handleASRResponse(msg *Message) error {
 	var payload ASRResponse
 	if err := json.Unmarshal(msg.Payload, &payload); err == nil && len(payload.Results) > 0 {
 		res := payload.Results[0]
+
 		if this.OnInputTranscriptPartial != nil && res.IsInterim {
 			go this.OnInputTranscriptPartial(res.Text, false) // 异步执行
 		}
 		if this.OnInputTranscript != nil && !res.IsInterim {
+			this.latestARSContentLock.Lock()
+			this.LatestARSContent = res.Text
+			this.latestARSContentLock.Unlock()
 			go this.OnInputTranscript(res.Text, true) // 异步执行
 		}
 	} else {
@@ -212,6 +229,12 @@ func (this *RealtimeVoiceClient) handleTTSSentenceStart(msg *Message) error {
 	}
 	var payload TTSSentenceStartResponse
 	if err := json.Unmarshal(msg.Payload, &payload); err == nil {
+		if this.enableEventLog {
+			this.log.Infof("TTS Sentence payload:%+v", payload)
+		}
+		this.latestAIResponseLock.Lock()
+		this.LatestAIResponse = ""
+		this.latestAIResponseLock.Unlock()
 		if lo.Contains([]string{"chat_tts_text", "external_rag"}, payload.TTSType) {
 			this.isSendingChatTTSText.Store(false)
 		}
@@ -272,6 +295,9 @@ func (this *RealtimeVoiceClient) handleTTSEnded(msg *Message) error {
 func (this *RealtimeVoiceClient) handleChatResponse(msg *Message) error {
 	var payload ChatResponse
 	if err := json.Unmarshal(msg.Payload, &payload); err == nil {
+		this.latestAIResponseLock.Lock()
+		this.LatestAIResponse += payload.Content
+		this.latestAIResponseLock.Unlock()
 		if this.OnChatResponse != nil {
 			this.OnChatResponse(payload.Content) // 异步执行
 		}
@@ -423,4 +449,18 @@ func (this *RealtimeVoiceClient) receiveMessage() (*Message, error) {
 		return nil, fmt.Errorf("unmarshal response message: %w", err)
 	}
 	return msg, nil
+}
+
+type MessageByStringPayload struct {
+	Type            MsgType
+	typeAndFlagBits uint8
+
+	Event     int32
+	SessionID string
+	ConnectID string
+	Sequence  int32
+	ErrorCode uint32
+	// Raw payload (not Gzip compressed). BinaryProtocol.Marshal will do the
+	// compression for you.
+	Payload string
 }
