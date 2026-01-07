@@ -235,6 +235,10 @@ func (this *RealtimeVoiceClient) RealTimeDialog() error {
 	err := this.startConnection()
 	if err != nil {
 		this.log.Errorf("realTimeDialog startConnection error: %v", err)
+		// Update connection state
+		if this.stateManager != nil {
+			this.stateManager.SetState(StateFailed)
+		}
 		return err
 	}
 
@@ -363,7 +367,10 @@ func (this *RealtimeVoiceClient) startConnection() error {
 		return fmt.Errorf("unexpected response event (%d) for StartConnection request", msg.Event)
 	}
 	this.log.Infof("Connection started (event=%d) connectID: %s, payload: %s", msg.Event, msg.ConnectID, msg.Payload)
-
+	// Update connection state
+	if this.stateManager != nil {
+		this.stateManager.SetState(StateConnecting)
+	}
 	return nil
 }
 
@@ -421,6 +428,10 @@ func (this *RealtimeVoiceClient) startSession(req *StartSessionPayload) error {
 		return fmt.Errorf("unmarshal SessionStarted response payload: %w", err)
 	}
 	this.dialogID = jsonData["dialog_id"].(string)
+	// Update connection state
+	if this.stateManager != nil {
+		this.stateManager.SetState(StateConnected)
+	}
 	return nil
 }
 

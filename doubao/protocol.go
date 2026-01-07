@@ -392,7 +392,8 @@ type Message struct {
 	ErrorCode uint32
 	// Raw payload (not Gzip compressed). BinaryProtocol.Marshal will do the
 	// compression for you.
-	Payload []byte
+	Payload    []byte
+	IsPrintLog bool
 }
 
 // NewMessage returns a new Message instance of the given message type with the
@@ -438,16 +439,22 @@ func (m *Message) writers(compress CompressFunc) (writers []writeFunc, _ error) 
 
 	if containsSequence(m.TypeFlag()) {
 		writers = append(writers, m.writeSequence)
-		log.Info("Add Sequence writer.")
+		if m.IsPrintLog {
+			log.Info("Add Sequence writer.")
+		}
 	}
 
 	if containsEvent(m.TypeFlag()) {
 		writers = append(writers, m.writeEvent, m.writeSessionID)
-		log.Info("Add Event and SessionID writer.")
+		if m.IsPrintLog {
+			log.Info("Add Event and SessionID writer.")
+		}
 	}
 
 	writers = append(writers, m.writePayload)
-	log.Info("Add Payload writers.")
+	if m.IsPrintLog {
+		log.Info("Add Payload writers.")
+	}
 	return writers, nil
 }
 
@@ -461,7 +468,9 @@ func (m *Message) writeEvent(buf *bytes.Buffer) error {
 func (m *Message) writeSessionID(buf *bytes.Buffer) error {
 	switch m.Event {
 	case 1, 2, 50, 51, 52: // StartConnection, FinishConnection, ConnectionStarted, ConnectionFailed, ConnectionFinished
-		log.Infof("Skip writing session ID for event: %d", m.Event)
+		if m.IsPrintLog {
+			log.Infof("Skip writing session ID for event: %d", m.Event)
+		}
 		return nil
 	}
 
@@ -510,13 +519,17 @@ func (m *Message) readers(containsSequence ContainsSequenceFunc) (readers []read
 	case MsgTypeAudioOnlyClient:
 		if containsSequence == nil || containsSequence(m.TypeFlag()) {
 			readers = append(readers, m.readSequence)
-			log.Info("AudioOnlyClient message: add Sequence reader.")
+			if m.IsPrintLog {
+				log.Info("AudioOnlyClient message: add Sequence reader.")
+			}
 		}
 
 	case MsgTypeAudioOnlyServer:
 		if containsSequence != nil && containsSequence(m.TypeFlag()) {
 			readers = append(readers, m.readSequence)
-			log.Info("AudioOnlyServer message: add Sequence reader.")
+			if m.IsPrintLog {
+				log.Info("AudioOnlyServer message: add Sequence reader.")
+			}
 		}
 
 	case MsgTypeError:
@@ -529,11 +542,15 @@ func (m *Message) readers(containsSequence ContainsSequenceFunc) (readers []read
 
 	if containsEvent(m.TypeFlag()) {
 		readers = append(readers, m.readEvent, m.readSessionID, m.readConnectID)
-		log.Info("Add Event and SessionID readers.")
+		if m.IsPrintLog {
+			log.Info("Add Event and SessionID readers.")
+		}
 	}
 
 	readers = append(readers, m.readPayload)
-	log.Info("Add Payload reader.")
+	if m.IsPrintLog {
+		log.Info("Add Payload reader.")
+	}
 	return readers, nil
 }
 
@@ -541,14 +558,18 @@ func (m *Message) readEvent(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &m.Event); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadEvent, err)
 	}
-	log.Infof("Read Event: %d", m.Event)
+	if m.IsPrintLog {
+		log.Infof("Read Event: %d", m.Event)
+	}
 	return nil
 }
 
 func (m *Message) readSessionID(buf *bytes.Buffer) error {
 	switch m.Event {
 	case 1, 2, 50, 51, 52: //StartConnection, FinishConnection, ConnectionStarted, ConnectionFailed, ConnectionFinished
-		log.Infof("Skip reading session ID for event: %d", m.Event)
+		if m.IsPrintLog {
+			log.Infof("Skip reading session ID for event: %d", m.Event)
+		}
 		return nil
 	}
 
@@ -556,12 +577,16 @@ func (m *Message) readSessionID(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &size); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadSessionIDSize, err)
 	}
-	log.Infof("Read SessionID length: %d", size)
+	if m.IsPrintLog {
+		log.Infof("Read SessionID length: %d", size)
+	}
 
 	if size > 0 {
 		m.SessionID = string(buf.Next(int(size)))
 	}
-	log.Infof("Read SessionID content: %s", m.SessionID)
+	if m.IsPrintLog {
+		log.Infof("Read SessionID content: %s", m.SessionID)
+	}
 	return nil
 }
 
@@ -569,7 +594,9 @@ func (m *Message) readConnectID(buf *bytes.Buffer) error {
 	switch m.Event {
 	case 50, 51, 52: // ConnectionStarted, event.Type_ConnectionFailed, ConnectionFinished
 	default:
-		log.Infof("Skip reading session ID for event: %d", m.Event)
+		if m.IsPrintLog {
+			log.Infof("Skip reading session ID for event: %d", m.Event)
+		}
 		return nil
 	}
 
@@ -577,12 +604,16 @@ func (m *Message) readConnectID(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &size); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadConnectIDSize, err)
 	}
-	log.Infof("Read connection ID length: %d", size)
+	if m.IsPrintLog {
+		log.Infof("Read connection ID length: %d", size)
+	}
 
 	if size > 0 {
 		m.ConnectID = string(buf.Next(int(size)))
 	}
-	log.Infof("Read connection ID content: %s", m.ConnectID)
+	if m.IsPrintLog {
+		log.Infof("Read connection ID content: %s", m.ConnectID)
+	}
 	return nil
 }
 
@@ -590,7 +621,9 @@ func (m *Message) readSequence(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &m.Sequence); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadSequence, err)
 	}
-	log.Infof("Read Sequence: %d", m.Sequence)
+	if m.IsPrintLog {
+		log.Infof("Read Sequence: %d", m.Sequence)
+	}
 	return nil
 }
 
@@ -598,7 +631,9 @@ func (m *Message) readErrorCode(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &m.ErrorCode); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadErrorCode, err)
 	}
-	log.Infof("Read ErrorCode: %d", m.ErrorCode)
+	if m.IsPrintLog {
+		log.Infof("Read ErrorCode: %d", m.ErrorCode)
+	}
 	return nil
 }
 
@@ -607,13 +642,17 @@ func (m *Message) readPayload(buf *bytes.Buffer) error {
 	if err := binary.Read(buf, binary.BigEndian, &size); err != nil {
 		return fmt.Errorf("%w: %v", ErrProtocolReadPayloadSize, err)
 	}
-	log.Infof("Read Payload length: %d", size)
+	if m.IsPrintLog {
+		log.Infof("Read Payload length: %d", size)
+	}
 
 	if size > 0 {
 		m.Payload = buf.Next(int(size))
 	}
 	if m.Type == MsgTypeFullClient || m.Type == MsgTypeFullServer || m.Type == MsgTypeError {
-		log.Infof("Read Payload content: %s", m.Payload)
+		if m.IsPrintLog {
+			log.Infof("Read Payload content: %s", m.Payload)
+		}
 	}
 	return nil
 }

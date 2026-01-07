@@ -51,6 +51,9 @@ func (this *RealtimeVoiceClient) handleMessage() {
 			if this.OnError != nil {
 				go this.OnError(err) // 异步执行
 			}
+			if this.stateManager != nil {
+				this.stateManager.SetState(StateDisconnected)
+			}
 			return
 		}
 
