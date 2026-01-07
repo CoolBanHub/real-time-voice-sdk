@@ -58,8 +58,8 @@ type ClientSession struct {
 
 func main() {
 	// 从环境变量读取配置
-	appID := ""
-	accessToken := ""
+	appID := os.Getenv("DOUBAO_APP_ID")
+	accessToken := os.Getenv("DOUBAO_ACCESS_TOKEN")
 	if appID == "" || accessToken == "" {
 		fmt.Println("请设置环境变量：DOUBAO_APP_ID 和 DOUBAO_ACCESS_TOKEN")
 		fmt.Println("示例：")
